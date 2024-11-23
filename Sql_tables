@@ -1,0 +1,61 @@
+import mysql.connector
+from mysql.connector import Error
+
+def connect_to_mysql():
+    try:
+        # Establish the connection
+        connection = mysql.connector.connect(
+            host="localhost",  # Change to your host
+            user="root",  # Replace with your MySQL username
+            password="sample",  # Replace with your MySQL password
+            database="cscproj"  # Replace with your database name
+        )
+
+        if connection.is_connected():
+            print("Connected to MySQL database")
+
+            # Create a cursor object
+            cursor = connection.cursor()
+
+            # Example 1: Create a table
+            create_table_query = """
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                age INT
+            );
+            """
+            cursor.execute(create_table_query)
+            print("Table 'users' created successfully (if not already exists).")
+
+            # Example 2: Insert data into the table
+            insert_query = """
+            INSERT INTO users (name, email, age)
+            VALUES (%s, %s, %s);
+            """
+            data = ("John Doe", "john.doe@example.com", 30)
+            cursor.execute(insert_query, data)
+            connection.commit()  # Save the changes
+            print(f"Inserted {cursor.rowcount} row(s) into the table.")
+
+            # Example 3: Query data from the table
+            select_query = "SELECT * FROM users;"
+            cursor.execute(select_query)
+            rows = cursor.fetchall()
+            print("Data from 'users' table:")
+            for row in rows:
+                print(row)
+
+    except Error as e:
+        print(f"Error connecting to MySQL: {e}")
+
+    finally:
+        # Close the connection
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+            print("MySQL connection closed.")
+
+# Run the function
+connect_to_mysql()
