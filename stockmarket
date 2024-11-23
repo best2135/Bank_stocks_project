@@ -1,0 +1,381 @@
+import mysql.connector
+import yfinance as yf
+import requests
+from prettytable import PrettyTable
+from bs4 import BeautifulSoup
+import datetime
+import decimal
+db_connection = mysql.connector.connect(
+    host="localhost",
+    user="root",
+    password="sample",
+    database="cscproj1"
+)
+cursor = db_connection.cursor()
+user_id=0
+
+def create_account(username, password, email):
+    # Check if the username already exists
+    cursor.execute("SELECT * FROM Users WHERE username = %s", (username,))
+    existing_user = cursor.fetchone()
+    if existing_user:
+        print(f"Error: The username '{username}' is already taken. Please choose a different username.")
+        return False
+
+    # If username is unique, proceed to create the account
+    try:
+        cursor.execute("INSERT INTO Users (username, password, email) VALUES (%s, %s, %s)", (username, password, email))
+        db_connection.commit()
+        print("Account created successfully!")
+
+        # Now, ask for the initial balance if the user does not have a bank account
+        user_id = cursor.lastrowid  # Get the newly created user ID
+
+        # Check if the user already has a bank account
+        cursor.execute("SELECT * FROM BankAccounts WHERE user_id = %s", (user_id,))
+        bank_account = cursor.fetchone()
+
+        if not bank_account:
+            # If no bank account exists, prompt the user to create one
+            print("You do not have a bank account yet. Let's create one now!")
+            bank_name = input("Enter your bank name: ")
+            account_number = input("Enter your account number: ")
+            balance = float(input("Enter your initial bank balance: $"))
+
+            cursor.execute("""
+                INSERT INTO BankAccounts (user_id, bank_name, account_number, balance)
+                VALUES (%s, %s, %s, %s)
+            """, (user_id, bank_name, account_number, balance))
+            db_connection.commit()
+            print("Bank account created successfully with the initial balance.")
+        else:
+            print("You already have a bank account. You can update your balance after logging in.")
+
+        return True
+    except mysql.connector.Error as err:
+        print("Error:", err)
+        return False
+
+
+def login(username, password):
+    cursor.execute("SELECT * FROM Users WHERE username = %s AND password = %s", (username, password))
+    user = cursor.fetchone()
+
+    if user:
+        print("Login successful!")
+        global user_id
+        user_id = user[0]  # Get the user ID
+        # Check if the user has a bank account
+        cursor.execute("SELECT * FROM BankAccounts WHERE user_id = %s", (user_id,))
+        bank_account = cursor.fetchone()
+
+        if bank_account:
+            print(f"\nBank Account Details for User '{username}':")
+            print(f"Bank: {bank_account[2]}")
+            print(f"Account Number: {bank_account[3]}")
+            print(f"Current Balance: ${bank_account[4]:,.2f}")
+
+            # Ask if the user wants to update their balance
+            action = input("\nDo you want to update your balance? (yes/no): ").strip().lower()
+            if action == "yes":
+                update_balance(bank_account[0])  # Pass the bank account ID to update balance
+            else:
+                print("You can update your balance anytime later.")
+        else:
+            print("You don't have a bank account. Please create one before proceeding.")
+            # Force the user to create a bank account before proceeding to the balance update
+            create_bank_account(user_id)
+
+        return True
+    else:
+        print("Invalid username or password.")
+        return False
+
+
+# Function to create a bank account (if user does not have one)
+def create_bank_account(user_id):
+    print("You do not have a bank account yet. Let's create one now!")
+    bank_name = input("Enter your bank name: ")
+    account_number = input("Enter your account number: ")
+    balance = float(input("Enter your initial bank balance: $"))
+
+    cursor.execute("""
+        INSERT INTO BankAccounts (user_id, bank_name, account_number, balance)
+        VALUES (%s, %s, %s, %s)
+    """, (user_id, bank_name, account_number, balance))
+    db_connection.commit()
+    print("Bank account created successfully with the initial balance.")
+
+
+# Function to update balance (deposit/withdraw)
+def update_balance(bank_account_id):
+    # Fetch the bank account details for the user
+    cursor.execute("SELECT * FROM BankAccounts WHERE id = %s", (bank_account_id,))
+    bank_account = cursor.fetchone()
+
+    if bank_account:
+        print(f"\nCurrent Balance: ${bank_account[4]:,.2f}")
+
+        action = input("Do you want to deposit or withdraw money? (deposit/withdraw): ").strip().lower()
+
+        if action == "deposit":
+            amount = float(input("Enter amount to deposit: $"))
+            if amount > 0:
+                new_balance = bank_account[4] + amount
+                cursor.execute("""
+                    UPDATE BankAccounts
+                    SET balance = %s
+                    WHERE id = %s
+                """, (new_balance, bank_account_id))
+                db_connection.commit()
+                print(f"Deposit successful! New balance: ${new_balance:,.2f}")
+            else:
+                print("Invalid amount. Please enter a positive value.")
+
+        elif action == "withdraw":
+            amount = float(input("Enter amount to withdraw: $"))
+            if amount > 0:
+                if amount <= bank_account[4]:
+                    new_balance = bank_account[4] - amount
+                    cursor.execute("""
+                        UPDATE BankAccounts
+                        SET balance = %s
+                        WHERE id = %s
+                    """, (new_balance, bank_account_id))
+                    db_connection.commit()
+                    print(f"Withdrawal successful! New balance: ${new_balance:,.2f}")
+                else:
+                    print("Insufficient balance.")
+            else:
+                print("Invalid amount. Please enter a positive value.")
+
+        else:
+            print("Invalid action. Please type 'deposit' or 'withdraw'.")
+    else:
+        print("You need to have a bank account to perform this operation.")
+def list_all_stocks():
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    response = requests.get(url)
+
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Find the table with S&P 500 symbols (first table on the page)
+        table = soup.find('table', {'class': 'wikitable'})
+        rows = table.find_all('tr')
+
+        sp500_stocks = []
+        for row in rows[1:]:  # Skipping the header row
+            cols = row.find_all('td')
+            if len(cols) > 1:
+                symbol = cols[0].get_text(strip=True)  # Symbol is in the first column
+                name = cols[1].get_text(strip=True)  # Company name is in the second column
+                sp500_stocks.append((symbol, name))
+
+        print(f"{'Symbol':<10} {'Company Name'}")  # Column headers
+        print('-' * 50)  # Underline for table
+        for symbol, name in sp500_stocks:
+            print(f"{symbol:<10} {name}")  # Printing symbol and company name
+    else:
+        print("Failed to retrieve the page.")
+
+
+
+def fetch_stock_details():
+    while True:
+        # Ask the user for the stock symbol
+        stock_symbol = input("Enter the stock symbol you want to see details for (or 'exit' to quit): ").strip()
+
+        if stock_symbol.lower() == 'exit':
+            print("Exiting stock details retrieval.")
+            break  # Exit the loop if the user types 'exit'
+
+        try:
+            print(f"Fetching details for stock: {stock_symbol}")  # Debugging line
+            stock = yf.Ticker(stock_symbol)
+            stock_info = stock.info
+
+            # Check if the stock symbol is valid and has data
+            if 'symbol' not in stock_info or not stock_info['symbol']:
+                print(f"Error: No data found for stock symbol '{stock_symbol}'.")
+                continue  # Ask for another stock symbol if no data is found
+
+            # Define the fields you want to display
+            fields_to_display = [
+                "symbol", "longName", "marketCap", "peRatio", "trailingPE",
+                "forwardPE", "52WeekChange", "beta", "dividendYield", "previousClose",
+                "dayLow", "dayHigh", "yearLow", "yearHigh", "volume", "avgVolume"
+            ]
+
+            # Printing stock information in a table format
+            print(f"\nStock Information for {stock_symbol}:")
+            table = PrettyTable()
+            table.field_names = ["Field", "Value"]
+
+            for field in fields_to_display:
+                value = stock_info.get(field, "N/A")  # Get the value, or "N/A" if the field is not available
+                table.add_row([field, value])
+
+            print(table)
+
+        except Exception as e:
+            print(f"Error fetching details for {stock_symbol}: {e}")
+
+        # Ask the user if they want to look up another stock
+        more_stocks = input("\nDo you want to look up another stock? (yes/no): ").strip().lower()
+        if more_stocks in "nN":
+            print("Exiting stock details retrieval.")
+            break
+        elif more_stocks in "yY":
+            continue
+        else:
+            print("error")
+
+
+def buy_stock(user_id):
+    # Step 1: Get the user's bank balance
+    cursor.execute("SELECT balance FROM BankAccounts WHERE user_id = %s", (user_id,))
+    bank_account = cursor.fetchone()
+
+    if not bank_account:
+        print("You don't have a bank account. Please create one first.")
+        return
+
+    # Ensure that balance is a Decimal type for precision
+    balance = decimal.Decimal(bank_account[0])
+    print(f"Your current balance is: ${balance:.2f}")
+
+    # Step 2: Get stock symbol from the user
+    while True:
+        stock_symbol = input("Enter the stock symbol you want to buy: ").strip().upper()
+
+        # Fetch stock price using yfinance
+        try:
+            # Fetch the stock data using yfinance
+            stock = yf.Ticker(stock_symbol)
+            current_price = stock.history(period="1d")["Close"].iloc[0]  # Get the latest closing price
+
+            print(f"The current price of {stock_symbol} is: ${current_price:.2f}")
+
+            if not current_price:
+                print(f"Error: Could not retrieve the stock price for {stock_symbol}. Please check the symbol and try again.")
+                continue  # Ask for a different stock symbol if the price isn't found
+            break  # Exit loop if valid price is found
+        except Exception as e:
+            print(f"Error retrieving data for {stock_symbol}: {e}")
+            return None
+
+    # Step 3: Get stock details to insert into the Stocks table if it doesn't already exist
+    cursor.execute("SELECT StockID FROM Stocks WHERE Symbol = %s", (stock_symbol,))
+    stock_data = cursor.fetchone()
+
+    if not stock_data:
+        print(f"Stock '{stock_symbol}' not found in the database. Adding it to the Stocks table...")
+
+        # Fetch stock details such as Company Name, Sector, Industry using yfinance
+        company_name = stock.info.get('longName', 'N/A')
+        sector = stock.info.get('sector', 'N/A')
+        industry = stock.info.get('industry', 'N/A')
+
+        # Insert new stock into the Stocks table
+        cursor.execute("""
+            INSERT INTO Stocks (Symbol, CompanyName, Sector, Industry)
+            VALUES (%s, %s, %s, %s)
+        """, (stock_symbol, company_name, sector, industry))
+
+        db_connection.commit()  # Commit the new stock insertion
+        print(f"Stock '{stock_symbol}' added to the database.")
+
+    # Step 4: Get the quantity from the user
+    quantity = int(input(f"Enter the quantity of {stock_symbol} you want to buy: "))
+
+    # Step 5: Calculate the total price and check if the user has enough balance
+    # Convert total_price to a Decimal to match the balance type
+    total_price = decimal.Decimal(current_price) * quantity
+    if total_price > balance:
+        print("You don't have enough balance to complete this purchase.")
+        return
+
+    # Step 6: Fetch the StockID from the Stocks table after inserting
+    cursor.execute("SELECT StockID FROM Stocks WHERE Symbol = %s", (stock_symbol,))
+    stock_data = cursor.fetchone()
+
+    if not stock_data:
+        print(f"Error: Stock with symbol '{stock_symbol}' not found.")
+        return
+
+    stock_id = stock_data[0]  # The StockID is needed to store the transaction
+
+    # Step 7: Insert the transaction into the UserTransactions table
+    cursor.execute("""
+        INSERT INTO UserTransactions (UserID, StockID, TransactionType, Quantity, Price, TransactionDate)
+        VALUES (%s, %s, 'Buy', %s, %s, %s)
+    """, (user_id, stock_id, quantity, current_price, datetime.datetime.now()))
+
+    db_connection.commit()  # Commit the transaction
+    print(f"Transaction successful: Bought {quantity} shares of {stock_symbol} at ${current_price:.2f} each for a total of ${total_price:.2f}.")
+
+    # Step 8: Update the user's bank balance (deduct the cost of the purchase)
+    new_balance = balance - total_price
+    cursor.execute("""
+        UPDATE BankAccounts
+        SET balance = %s
+        WHERE user_id = %s
+    """, (new_balance, user_id))
+
+    db_connection.commit()  # Commit the updated balance
+    print(f"Your new balance is: ${new_balance:.2f}")
+
+    # Step 9: Ask if the user wants to see their transaction history
+    view_history = input("Do you want to see your transaction history? (yes/no): ").strip().lower()
+    if view_history == "yes":
+        view_transaction_history(user_id)
+
+def view_transaction_history(user_id):
+    cursor.execute("""
+        SELECT t.TransactionID, s.Symbol, t.TransactionType, t.Quantity, t.Price, t.TransactionDate
+        FROM UserTransactions t
+        JOIN Stocks s ON t.StockID = s.StockID
+        WHERE t.UserID = %s
+        ORDER BY t.TransactionDate DESC
+    """, (user_id,))
+
+    transactions = cursor.fetchall()
+
+    if transactions:
+        print("\nYour transaction history:")
+        for transaction in transactions:
+            print(f"TransactionID: {transaction[0]}, Symbol: {transaction[1]}, "
+                  f"Type: {transaction[2]}, Quantity: {transaction[3]}, "
+                  f"Price: ${transaction[4]:.2f}, Date: {transaction[5]}")
+    else:
+        print("No transaction history found.")
+
+
+while True:
+    action = input("Do you want to create a new account or log in? (create/login): ").strip().lower()
+
+    if action == "create":
+        username = input("Enter a username: ")
+        password = input("Enter a password: ")
+        email = input("Enter an email: ")
+        if create_account(username, password, email):
+            break  # Exit the loop if account creation is successful
+    elif action == "login":
+        username = input("Enter your username: ")
+        password = input("Enter your password: ")
+        if login(username, password):
+            break  # Exit the loop if login is successful
+    else:
+        print("Invalid choice. Please type 'create' or 'login'.")
+
+
+
+
+x=input("Do you want the stock list to be printed (Y/N)")
+if x in"yY":
+    list_all_stocks()
+fetch_stock_details()
+buy_stock(user_id)
+view_transaction_history(user_id)
+cursor.close()
+db_connection.close()
